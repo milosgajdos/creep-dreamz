@@ -4,19 +4,19 @@ import numpy as np
 import tensorflow as tf
 
 from keras.preprocessing.image import load_img, img_to_array
-from keras.applications import resnet50
+from keras.applications import inception_v3
 from keras import backend as K
 
 def preprocess_image(image_path):
     """
     Loads image from image_path, resizes it to appropriate tensor
-    and preprocesses it for use with Resnet50 model
+    and preprocesses it for use with InceptionV3 model
     :param image_path: path to image
     """
     img = load_img(image_path)
     img = img_to_array(img)
     img = np.expand_dims(img, axis=0)
-    img = resnet50.preprocess_input(img)
+    img = inception_v3.preprocess_input(img)
     return img
 
 def deprocess_image(x):
@@ -51,8 +51,6 @@ def resize_img(img, size):
                    float(size[0]) / img.shape[1],
                    float(size[1]) / img.shape[2],
                    1)
-    # TODO: optimize using tensorflow functions
-    # https://github.com/alexisbcook/ResNetCAM-keras/pull/2
     return scipy.ndimage.zoom(img, factors, order=1)
 
 def save_img(img, fname):
@@ -102,25 +100,6 @@ def build_gradients(model, loss):
     grads /= K.maximum(K.mean(K.abs(grads)), K.epsilon())
     return grads
 
-def gradient_ascent(x, loss_fn, iterations, step, max_loss=None):
-    """
-    Runs gradient ascent for a given loss and input
-    :params x: input data (image)
-    :params loss_fn: function that fetches loss and gradients
-    :params iterations: number of gradient ascent iterations
-    :params step: gradient ascent step size; this scales up the gradient
-    :params max_loss: maximum loss
-    """
-    for i in range(iterations):
-        # evaluate loss and gradient for the supplied input data
-        loss_value, grad_values = loss_fn([x])
-        if max_loss is not None and loss_value > max_loss:
-            break
-        print('..Loss value at', i, ':', loss_value)
-        # amplify gradient by step
-        x += step * grad_values
-    return x
-
 def dream_shapes(img, octave, octavescale):
     """
     Reads an image and generates a list of shapes based
@@ -141,29 +120,52 @@ def dream_shapes(img, octave, octavescale):
     successive_shapes = successive_shapes[::-1]
     return successive_shapes
 
-def dream(img, loss_fn, shapes, iterations, step, max_loss):
+def gradient_ascent(x, loss_fn, iterations, step, max_loss=None):
+    """
+    Runs gradient ascent for a given loss and input
+    :params x: input data (image)
+    :params loss_fn: function that fetches loss and gradients
+    :params iterations: number of gradient ascent iterations
+    :params step: gradient ascent step size; this scales up the gradient
+    :params max_loss: maximum loss
+    """
+    for i in range(iterations):
+        # evaluate loss and gradient for the supplied input data
+        loss_value, grad_values = loss_fn([x])
+        if max_loss is not None and loss_value > max_loss:
+            break
+        print('..Loss value at', i, ':', loss_value)
+        # amplify gradient by step
+        x += step * grad_values
+    return x
+
+def dream(img, loss_fn, shapes, iterations, step, max_loss, jitter=32):
     """
     Creep Dream:
         - Run gradient ascent
         - Upscale image to the next scale
         - Reinject the detail that was lost at upscaling time
-    :param img: input image
+    :param img: input image as numpy array
     :params loss_fn: function that fetches loss and gradients
     :param shapes: successive image shapes
     :param iterations: number of iterations
     :param step: gradient ascent step size
     :param max_loss: gradient descent max loss
+    :param jitter: pixel offset for more interesting style
     """
     orig_img = np.copy(img)
     shrunk_orig_img = resize_img(img, shapes[0])
     for shape in shapes:
         print('Processing image shape', shape)
         img = resize_img(img, shape)
+        ox, oy = np.random.randint(-jitter, jitter+1, 2)
+        img = np.roll(np.roll(img, ox, -1), oy, -2)
         img = gradient_ascent(img,
                               loss_fn=loss_fn,
                               iterations=iterations,
                               step=step,
                               max_loss=max_loss)
+        img = np.roll(np.roll(img, -ox, -1), -oy, -2)
         # upscale shrunk image: not in first iteration this will do nothing
         upscaled_shrunk_orig_img = resize_img(shrunk_orig_img, shape)
         # upscale original image: from the original size back to original
@@ -190,24 +192,24 @@ if __name__ == "__main__":
     parser.add_argument('-mxl', '--maxloss', type=float,
                         help='Maximum gradient ascent loss', required=False)
 
-    # These are the names of the Resnet 50 layers
+    # These are the names of the InceptionV3 50 layers
     # for which we try to maximize activation,
     # as well as their weight in the loss # we try to maximize.
     # You can tweak these setting to obtain new visual effects.
     config = {
         'features': {
-            'add_3': 0.2,
-            'add_5': 0.5,
-            'add_9': 2.,
-            'add_11': 1.5,
+            'mixed2': 0.2,
+            'mixed3': 0.5,
+            'mixed4': 2.,
+            'mixed5': 1.5,
         },
     }
 
     args = parser.parse_args()
     # set learning phase to test mode
     K.set_learning_phase(0)
-    # Load Resnet50 model
-    model = resnet50.ResNet50(weights='imagenet', include_top=False)
+    # Load ption model
+    model = inception_v3.InceptionV3(weights='imagenet', include_top=False)
     print('Model loaded.')
     # build gradient ascent loss
     loss = build_loss(model, config)
