@@ -1,5 +1,6 @@
+import os
 import argparse
-import scipy
+
 import numpy as np
 import tensorflow as tf
 
@@ -9,9 +10,20 @@ from keras import backend as K
 
 def preprocess_image(image_path):
     """
-    Loads image from image_path, resizes it to appropriate tensor
+    Preprocess image
+
+    Loads an image from image_path, resizes it to appropriate dimensions
     and preprocesses it for use with InceptionV3 model
-    :param image_path: path to image
+
+    Parameters
+    ----------
+    image_path : str
+        Path to image on the filesystem.
+
+    Returns
+    -------
+    img : ndarray
+        Preprocessed image
     """
     img = load_img(image_path)
     img = img_to_array(img)
@@ -19,54 +31,113 @@ def preprocess_image(image_path):
     img = inception_v3.preprocess_input(img)
     return img
 
-def deprocess_image(x):
-    """
-    Coverts an image tensor into a numpy image
-    :param x: image tensor
-    """
-    if K.image_data_format() == 'channels_first':
-        x = x.reshape((3, x.shape[2], x.shape[3]))
-        x = x.transpose((1, 2, 0))
-    else:
-        x = x.reshape((x.shape[1], x.shape[2], 3))
-    x /= 2.
-    x += 0.5
-    x *= 255.
-    x = np.clip(x, 0, 255).astype('uint8')
-    return x
-
 def resize_img(img, size):
     """
-    Resize image to appropriate size
-    :param img: image tensor
-    :param size: image dimensions tuple
+    Resize image
+
+    Parameters
+    ----------
+    img: ndarray
+        Image as numpy array.
+    size: sequence
+        Requested resized image dimensions.
+
+    Returns
+    -------
+    img : tf.Tensor
+        Reized image tensor.
     """
-    img = np.copy(img)
+    img = tf.convert_to_tensor(img, dtype=np.float32)
+    img = tf.identity(img)
+    return tf.image.resize_images(img, size)
+
+def deprocess_img(img):
+    """
+    Convert an image tensor into a numpy image
+
+    Parameters
+    ----------
+    img : tf.Tensor
+        Image tensor
+
+    Returns
+    -------
+    img : tf.Tensor
+        Image tensor
+    """
     if K.image_data_format() == 'channels_first':
-        factors = (1, 1,
-                   float(size[0]) / img.shape[2],
-                   float(size[1]) / img.shape[3])
+        _, _, w, h = img.get_shape().as_list()
+        img = tf.reshape(img, [3, w, h])
+        img = tf.transpose(img, [1, 2, 0])
     else:
-        factors = (1,
-                   float(size[0]) / img.shape[1],
-                   float(size[1]) / img.shape[2],
-                   1)
-    return scipy.ndimage.zoom(img, factors, order=1)
+        _, w, h, _ = img.get_shape().as_list()
+        img = tf.reshape(img, [w, h, 3])
+    img = tf.divide(img, 2.)
+    img = tf.add(img, 0.5)
+    img = tf.multiply(img, 255.)
+    img = tf.cast(tf.clip_by_value(img, 0, 255), tf.uint8)
+    return img
+
+def encode_img(img, fname):
+    """
+    Encodes image to chosen image format
+
+    Image format is inferred from image extension
+
+    Parameters
+    ----------
+    img : tf.Tensor
+        Image tensor
+    fname : str
+        File name
+
+    Returns
+    -------
+    img : tf.Tensor
+        Image tensor encoded in requested image format
+    """
+    _, ext = os.path.splitext(fname)
+    if ext == '.png':
+        return tf.image.encode_png(img)
+    elif ext == 'bmp':
+        return tf.image.encode_bmp(img)
+    elif ext == '.jpeg' or ext == '.jpg':
+        return tf.image.encode_jpeg(img)
+    else:
+        raise ValueError('Unsupported extension: {}'.format(ext))
 
 def save_img(img, fname):
     """
     Saves image on filesystem
-    :params img: image as numpy array
-    :params fname: filename
+
+    Parameters
+    ----------
+    img : tf.Tensor
+        Image tensor
+    fname : str
+        Filesystem path
     """
-    pil_img = deprocess_image(np.copy(img))
-    scipy.misc.imsave(fname, pil_img)
+    out_img = tf.identity(img)
+    out_img = deprocess_img(out_img)
+    out_img = encode_img(out_img, fname)
+    fname = tf.constant(fname)
+    K.get_session().run(tf.write_file(fname, out_img))
 
 def build_loss(model, config):
     """
     Builds loss function for gradient ascent
-    :param model: DNN model used for creap dreaming
-    :param config: creeep dream configuration
+
+    Parameters
+    ----------
+    model : keras.Model
+        Keras DNN model used for creep dreaming
+    config : dict
+        Creep dream layer config dictionary
+
+    Returns
+    -------
+    loss : keras.tensor.Op
+        Loss function operation
     """
     # Get the symbolic outputs of each "key" layer (we gave them unique names).
     layer_dict = dict([(layer.name, layer) for layer in model.layers])
@@ -89,8 +160,18 @@ def build_loss(model, config):
 def build_gradients(model, loss):
     """
     Builds gradient tensor
-    :param model: DNN model used for creap dreaming
-    :param loss: gradient ascent loss
+
+    Parameters
+    ----------
+    model : keras.Model
+        Neural network model used for creap dreaming
+    loss : tf.Tensor
+        Gradient ascent loss
+
+    Returns
+    -------
+    grads : tf.Tensor
+        Gradients tensor
     """
     # dream is created by flowing an input through model
     dream = model.input
@@ -100,78 +181,115 @@ def build_gradients(model, loss):
     grads /= K.maximum(K.mean(K.abs(grads)), K.epsilon())
     return grads
 
-def dream_shapes(img, octave, octavescale):
+def dream_shapes(img, octave, octave_scale):
     """
     Reads an image and generates a list of shapes based
-    on supplied octave and octave scale.
-    Returned shapes are sorted in ascending order.
-    :params img: input image as tensor
-    :params octave: number of scales at which to run gradient ascent
-    :params octavescale: size ratio between scales
+    on supplied octave and octave scale parameters.
+
+    Parameters
+    ----------
+    img : ndarray
+        Input image
+    octave : int
+        Number of scales at which to run gradient ascent
+    octavescale : float
+        Size ratio between shapes
+
+    Returns
+    -------
+    shapes : sequence
+        Sequence of shape sorted in ascending order.
     """
     if K.image_data_format() == 'channels_first':
-        original_shape = img.shape[2:]
+        orig_shape = img.shape[2:]
     else:
-        original_shape = img.shape[1:3]
-    successive_shapes = [original_shape]
+        orig_shape = img.shape[1:3]
+    shapes = [orig_shape]
     for i in range(1, octave):
-        shape = tuple([int(dim / (octavescale ** i)) for dim in original_shape])
-        successive_shapes.append(shape)
-    successive_shapes = successive_shapes[::-1]
-    return successive_shapes
+        shape = tuple([int(dim / (octave_scale ** i)) for dim in orig_shape])
+        shapes.append(shape)
+    shapes = shapes[::-1]
+    return shapes
 
 def gradient_ascent(x, loss_fn, iterations, step, max_loss=None):
     """
-    Runs gradient ascent for a given loss and input
-    :params x: input data (image)
-    :params loss_fn: function that fetches loss and gradients
-    :params iterations: number of gradient ascent iterations
-    :params step: gradient ascent step size; this scales up the gradient
-    :params max_loss: maximum loss
+    Run gradient ascent
+
+    Parameters
+    ----------
+    x : tf.Tensor
+        Input data tensor
+    loss_fn : function
+        Function that evaluates and fetches loss and gradients
+    iterations : int
+        Number of gradient ascent iterations
+    step : int
+        Gradient ascent step size; this scales up the gradient size
+    max_loss : float
+        Maximum loss threshold
+
+    Returns
+    -------
+    x : tf.Tensor
+        Output data tensor after gradient ascent
     """
     for i in range(iterations):
         # evaluate loss and gradient for the supplied input data
-        loss_value, grad_values = loss_fn([x])
+        loss_value, grad_values = loss_fn([x.eval(session=K.get_session())])
         if max_loss is not None and loss_value > max_loss:
             break
         print('..Loss value at', i, ':', loss_value)
         # amplify gradient by step
-        x += step * grad_values
+        x = tf.add(x, step * grad_values)
     return x
 
-def dream(img, loss_fn, shapes, iterations, step, max_loss, jitter=32):
+def dream(img, loss_fn, shapes, iterations, step, max_loss):
     """
     Creep Dream:
-        - Run gradient ascent
-        - Upscale image to the next scale
-        - Reinject the detail that was lost at upscaling time
-    :param img: input image as numpy array
-    :params loss_fn: function that fetches loss and gradients
-    :param shapes: successive image shapes
-    :param iterations: number of iterations
-    :param step: gradient ascent step size
-    :param max_loss: gradient descent max loss
-    :param jitter: pixel offset for more interesting style
+
+    Runs gradient ascent. First it upscales provided image to particular
+    scale then it reinjects the detail that was lost at upscaling time back.
+
+    Parameters
+    ----------
+    img : ndarray
+        Image as a numpy array
+    loss_fn : keras.Function
+        Function that fetches loss and gradients
+    shapes : sequence
+        Successive image shapes
+    iterations : int
+        Number of iterations
+    step : int
+        Gradient ascent step size
+    max_loss : float
+        Gradient descent max loss
+    jitter : int
+        Pixel offset for more interesting style
+
+    Returns
+    -------
+    img : tf.Tensor
+        Deep dream modified image
     """
     orig_img = np.copy(img)
     shrunk_orig_img = resize_img(img, shapes[0])
     for shape in shapes:
+    #for shape in [shapes[0]]:
         print('Processing image shape', shape)
         img = resize_img(img, shape)
-        ox, oy = np.random.randint(-jitter, jitter+1, 2)
-        img = np.roll(np.roll(img, ox, -1), oy, -2)
+        # shift image pixels by jitter pixels
         img = gradient_ascent(img,
                               loss_fn=loss_fn,
                               iterations=iterations,
                               step=step,
                               max_loss=max_loss)
-        img = np.roll(np.roll(img, -ox, -1), -oy, -2)
         # upscale shrunk image: not in first iteration this will do nothing
         upscaled_shrunk_orig_img = resize_img(shrunk_orig_img, shape)
         # upscale original image: from the original size back to original
         same_size_orig_img = resize_img(orig_img, shape)
-        lost_detail = same_size_orig_img - upscaled_shrunk_orig_img
-        img += lost_detail
+        lost_detail = tf.subtract(same_size_orig_img, upscaled_shrunk_orig_img)
+        img = tf.add(img, lost_detail)
         shrunk_orig_img = resize_img(orig_img, shape)
     return img
 
