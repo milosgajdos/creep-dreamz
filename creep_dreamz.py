@@ -1,5 +1,4 @@
 import os
-import time
 import argparse
 
 import numpy as np
@@ -11,15 +10,15 @@ from keras import backend as K
 
 def preprocess_image(image_path):
     """
-    Preprocess image
+    Preprocesses an image
 
-    Loads an image from image_path, resizes it to appropriate dimensions
-    and preprocesses it for use with InceptionV3 model
+    Loads an image, resizes it to and preprocesses it
+    for use with InceptionV3 model
 
     Parameters
     ----------
     image_path : str
-        Path to image on the filesystem.
+        Path to image on the filesystem
 
     Returns
     -------
@@ -34,19 +33,21 @@ def preprocess_image(image_path):
 
 def resize_img(img, size):
     """
-    Resize image
+    Resizes an image
+
+    The size of the returned image is supplied as tuple
 
     Parameters
     ----------
     img: ndarray
-        Image as numpy array.
+        Image as numpy array
     size: sequence
-        Requested resized image dimensions.
+        Requested resized image dimensions
 
     Returns
     -------
     img : tf.Tensor
-        Reized image tensor.
+        Reized image tensor
     """
     img = tf.convert_to_tensor(img, dtype=np.float32)
     img = tf.image.resize_images(img, size)
@@ -54,7 +55,7 @@ def resize_img(img, size):
 
 def deprocess_img(img):
     """
-    Convert an image tensor into a numpy image
+    Converts a preprocessed image into original image
 
     Parameters
     ----------
@@ -81,7 +82,7 @@ def deprocess_img(img):
 
 def encode_img(img, fname):
     """
-    Encodes image to chosen image format
+    Encodes an image into chosen image format
 
     Image format is inferred from image extension
 
@@ -159,19 +160,19 @@ def build_loss(model, config):
 
 def build_gradients(model, loss):
     """
-    Builds gradient tensor
+    Builds gradients keras operation
 
     Parameters
     ----------
     model : keras.Model
         Neural network model used for creap dreaming
     loss : tf.Tensor
-        Gradient ascent loss
+        Gradient ascent loss tensor
 
     Returns
     -------
-    grads : tf.Tensor
-        Gradients tensor
+    grads : tf.Tensor.Op
+        Gradients tensor operation
     """
     # dream is created by flowing an input through model
     dream = model.input
@@ -234,14 +235,11 @@ def gradient_ascent(x, loss_fn, iterations, step, max_loss=None):
         Output data tensor after gradient ascent
     """
     for i in range(iterations):
-        start = time.time()
         # evaluate loss and gradient for the supplied input data
         loss_value, grad_values = loss_fn([x.eval(session=K.get_session())])
         if max_loss is not None and loss_value > max_loss:
             break
         print('..Loss value at', i, ':', loss_value)
-        end = time.time()
-        print('gradient_ascent: ', end - start)
         # amplify gradient by step
         x = tf.add(x, step * grad_values)
     return x
@@ -277,10 +275,8 @@ def dream(img, model, iterations, step, max_loss, shapes, config):
     """
     # build gradient ascent loss
     loss = build_loss(model, config)
-    print('Loss built.')
     # build image gradients
     grads = build_gradients(model, loss)
-    print('Gradients built.')
     # function that evaluates loss and gradients
     loss_fn = K.function([model.input], [loss, grads])
 
@@ -288,7 +284,6 @@ def dream(img, model, iterations, step, max_loss, shapes, config):
     shrunk_orig_img = resize_img(img, shapes[0])
     for shape in shapes:
     #for shape in [shapes[0]]:
-        print('Processing image shape', shape)
         img = resize_img(img, shape)
         # shift image pixels by jitter pixels
         img = gradient_ascent(img,
@@ -340,10 +335,8 @@ if __name__ == "__main__":
     K.set_learning_phase(0)
     # Load ption model
     model = inception_v3.InceptionV3(weights='imagenet', include_top=False)
-    print('Model loaded.')
     # preprocess input image
     img = preprocess_image(args.input)
-    print('Preprocessed image', args.input)
     # generate creep dream shapes
     shapes = dream_shapes(img, args.octave, args.octavescale)
     # run creep dream and get the resulting image
