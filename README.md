@@ -7,6 +7,7 @@ The project no longer depends on `scipy` module for image manipulation that was 
 
 # Usage
 
+```
 usage: creep_dreamz.py [-h] -i INPUT -o OUTPUT [-oct OCTAVE]
                        [-ocs OCTAVESCALE] [-s STEP] [-iter ITERATIONS]
                        [-mxl MAXLOSS]
@@ -28,6 +29,7 @@ optional arguments:
                         Number of gradient ascent steps per scale
   -mxl MAXLOSS, --maxloss MAXLOSS
                         Maximum gradient ascent loss
+```
 
 # Example run
 
