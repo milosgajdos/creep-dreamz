@@ -1,4 +1,5 @@
 import os
+import time
 import argparse
 
 import numpy as np
@@ -48,8 +49,8 @@ def resize_img(img, size):
         Reized image tensor.
     """
     img = tf.convert_to_tensor(img, dtype=np.float32)
-    img = tf.identity(img)
-    return tf.image.resize_images(img, size)
+    img = tf.image.resize_images(img, size)
+    return img
 
 def deprocess_img(img):
     """
@@ -117,8 +118,7 @@ def save_img(img, fname):
     fname : str
         Filesystem path
     """
-    out_img = tf.identity(img)
-    out_img = deprocess_img(out_img)
+    out_img = deprocess_img(img)
     out_img = encode_img(out_img, fname)
     fname = tf.constant(fname)
     K.get_session().run(tf.write_file(fname, out_img))
@@ -234,16 +234,19 @@ def gradient_ascent(x, loss_fn, iterations, step, max_loss=None):
         Output data tensor after gradient ascent
     """
     for i in range(iterations):
+        start = time.time()
         # evaluate loss and gradient for the supplied input data
         loss_value, grad_values = loss_fn([x.eval(session=K.get_session())])
         if max_loss is not None and loss_value > max_loss:
             break
         print('..Loss value at', i, ':', loss_value)
+        end = time.time()
+        print('gradient_ascent: ', end - start)
         # amplify gradient by step
         x = tf.add(x, step * grad_values)
     return x
 
-def dream(img, loss_fn, shapes, iterations, step, max_loss):
+def dream(img, model, iterations, step, max_loss, shapes, config):
     """
     Creep Dream:
 
@@ -254,24 +257,33 @@ def dream(img, loss_fn, shapes, iterations, step, max_loss):
     ----------
     img : ndarray
         Image as a numpy array
-    loss_fn : keras.Function
-        Function that fetches loss and gradients
-    shapes : sequence
-        Successive image shapes
+    model : keras.model
+        Keras CNN model
     iterations : int
         Number of iterations
     step : int
         Gradient ascent step size
     max_loss : float
         Gradient descent max loss
-    jitter : int
-        Pixel offset for more interesting style
+    shapes : sequence
+        Successive image shapes
+    config : dict
+        Model config dictionary
 
     Returns
     -------
     img : tf.Tensor
         Deep dream modified image
     """
+    # build gradient ascent loss
+    loss = build_loss(model, config)
+    print('Loss built.')
+    # build image gradients
+    grads = build_gradients(model, loss)
+    print('Gradients built.')
+    # function that evaluates loss and gradients
+    loss_fn = K.function([model.input], [loss, grads])
+
     orig_img = np.copy(img)
     shrunk_orig_img = resize_img(img, shapes[0])
     for shape in shapes:
@@ -329,20 +341,13 @@ if __name__ == "__main__":
     # Load ption model
     model = inception_v3.InceptionV3(weights='imagenet', include_top=False)
     print('Model loaded.')
-    # build gradient ascent loss
-    loss = build_loss(model, config)
-    print('Loss built.')
-    # build image gradients
-    grads = build_gradients(model, loss)
-    print('Gradients built.')
-    # function that evaluates loss and gradients
-    loss_fn = K.function([model.input], [loss, grads])
     # preprocess input image
     img = preprocess_image(args.input)
     print('Preprocessed image', args.input)
     # generate creep dream shapes
     shapes = dream_shapes(img, args.octave, args.octavescale)
     # run creep dream and get the resulting image
-    img = dream(img, loss_fn, shapes, args.iterations, args.step, args.maxloss)
+    img = dream(img, model, args.iterations, args.step,
+                args.maxloss, shapes, config)
     # save resulting image to hard drive
     save_img(img, fname=args.output)
