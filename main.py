@@ -10,7 +10,7 @@ if __name__ == "__main__":
     parser.add_argument('-o', '--output', type=str,
                         help='Path to the output data', required=True)
     parser.add_argument('-m', '--model', type=str,
-                        help='Model name', required=True)
+                        help='Keras model name', required=True)
     parser.add_argument('-iter', '--iterations', type=int,
                         help='Number of gradient ascent steps per scale', required=False)
     parser.add_argument('-s', '--step', type=float,
