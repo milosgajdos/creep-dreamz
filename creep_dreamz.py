@@ -1,346 +1,217 @@
-import os
-import argparse
-
 import numpy as np
 import tensorflow as tf
 
-from keras.preprocessing.image import load_img, img_to_array
-from keras.applications import inception_v3
 from keras import backend as K
+from image import resize
 
-def preprocess_image(image_path):
-    """
-    Preprocesses an image
+class CreepDream:
+    """CreepDream implements Deep Dream in Tensorflow """
+    def __init__(self, model_name, layer_config):
+        """
+        Initializes CreepDream
 
-    Loads an image, resizes it to and preprocesses it
-    for use with InceptionV3 model
-
-    Parameters
-    ----------
-    image_path : str
-        Path to image on the filesystem
-
-    Returns
-    -------
-    img : ndarray
-        Preprocessed image
-    """
-    img = load_img(image_path)
-    img = img_to_array(img)
-    img = np.expand_dims(img, axis=0)
-    img = inception_v3.preprocess_input(img)
-    return img
-
-def resize_img(img, size):
-    """
-    Resizes an image
-
-    The size of the returned image is supplied as tuple
-
-    Parameters
-    ----------
-    img: ndarray
-        Image as numpy array
-    size: sequence
-        Requested resized image dimensions
-
-    Returns
-    -------
-    img : tf.Tensor
-        Reized image tensor
-    """
-    img = tf.convert_to_tensor(img, dtype=np.float32)
-    img = tf.image.resize_images(img, size)
-    return img
-
-def deprocess_img(img):
-    """
-    Converts a preprocessed image into original image
-
-    Parameters
-    ----------
-    img : tf.Tensor
-        Image tensor
-
-    Returns
-    -------
-    img : tf.Tensor
-        Image tensor
-    """
-    if K.image_data_format() == 'channels_first':
-        _, _, w, h = img.get_shape().as_list()
-        img = tf.reshape(img, [3, w, h])
-        img = tf.transpose(img, [1, 2, 0])
-    else:
-        _, w, h, _ = img.get_shape().as_list()
-        img = tf.reshape(img, [w, h, 3])
-    img = tf.divide(img, 2.)
-    img = tf.add(img, 0.5)
-    img = tf.multiply(img, 255.)
-    img = tf.cast(tf.clip_by_value(img, 0, 255), tf.uint8)
-    return img
-
-def encode_img(img, fname):
-    """
-    Encodes an image into chosen image format
-
-    Image format is inferred from image extension
-
-    Parameters
-    ----------
-    img : tf.Tensor
-        Image tensor
-    fname : str
-        File name
-
-    Returns
-    -------
-    img : tf.Tensor
-        Image tensor encoded in requested image format
-    """
-    _, ext = os.path.splitext(fname)
-    if ext == '.png':
-        return tf.image.encode_png(img)
-    elif ext == 'bmp':
-        return tf.image.encode_bmp(img)
-    elif ext == '.jpeg' or ext == '.jpg':
-        return tf.image.encode_jpeg(img)
-    else:
-        raise ValueError('Unsupported extension: {}'.format(ext))
-
-def save_img(img, fname):
-    """
-    Saves image on filesystem
-
-    Parameters
-    ----------
-    img : tf.Tensor
-        Image tensor
-    fname : str
-        Filesystem path
-    """
-    out_img = deprocess_img(img)
-    out_img = encode_img(out_img, fname)
-    fname = tf.constant(fname)
-    K.get_session().run(tf.write_file(fname, out_img))
-
-def build_loss(model, config):
-    """
-    Builds loss function for gradient ascent
-
-    Parameters
-    ----------
-    model : keras.Model
-        Keras DNN model used for creep dreaming
-    config : dict
-        Creep dream layer config dictionary
-
-    Returns
-    -------
-    loss : keras.tensor.Op
-        Loss function operation
-    """
-    # Get the symbolic outputs of each "key" layer (we gave them unique names).
-    layer_dict = dict([(layer.name, layer) for layer in model.layers])
-    # Define the loss.
-    loss = K.variable(0.)
-    for layer_name in config['features']:
-        # Add the L2 norm of the features of a layer to the loss.
-        assert layer_name in layer_dict.keys(), 'Layer ' + layer_name + ' not found in model.'
-        # feature map weight
-        w = config['features'][layer_name]
-        x = layer_dict[layer_name].output
-        # We avoid border artifacts by only involving non-border pixels in the loss.
-        scaling = K.prod(K.cast(K.shape(x), 'float32'))
-        if K.image_data_format() == 'channels_first':
-            loss += w * K.sum(K.square(x[:, :, 2: -2, 2: -2])) / scaling
+        Parameters
+        ----------
+        model_name : str
+            Name of a Keras model
+        layer_config : dict
+            Model layer configuration dictionary
+            `layer_config` is a dictionary as follows `{'layer_name' : weight}`
+            `layer_name` must be a name of an existing `model` layer, `weight` is a
+            float number representing the particular layer effect in resulting dream
+        """
+        if model_name == 'VGG16':
+            from keras.applications.vgg16 import VGG16
+            model = VGG16(weights='imagenet', include_top=False)
+        elif model_name == 'VGG19':
+            from keras.applications.vgg19 import VGG19
+            model = VGG19(weights='imagenet', include_top=False)
+        elif model_name == 'Resnet50':
+            from keras.applications.resnet50 import ResNet50
+            model = ResNet50(weights='imagenet', include_top=False)
+        elif model_name == 'Xception':
+            from keras.applications.xception import Xception
+            model = Xception(weights='imagenet', include_top=False)
+        elif model_name == 'InceptionV3':
+            from keras.applications.inception_v3 import InceptionV3
+            model = InceptionV3(weights='imagenet', include_top=False)
         else:
-            loss += w * K.sum(K.square(x[:, 2: -2, 2: -2, :])) / scaling
-    return loss
+            raise ValueError('Unsupported model: {}'.format(model_name))
 
-def build_gradients(model, loss):
-    """
-    Builds gradients keras operation
+        self.model = model
+        self.layer_config = layer_config
 
-    Parameters
-    ----------
-    model : keras.Model
-        Neural network model used for creap dreaming
-    loss : tf.Tensor
-        Gradient ascent loss tensor
+    def _build_loss(self):
+        """
+        Builds loss function for gradient ascent
 
-    Returns
-    -------
-    grads : tf.Tensor.Op
-        Gradients tensor operation
-    """
-    # dream is created by flowing an input through model
-    dream = model.input
-    # Compute the gradients of the dream wrt the loss.
-    grads = K.gradients(loss, dream)[0]
-    # Normalize gradients.
-    grads /= K.maximum(K.mean(K.abs(grads)), K.epsilon())
-    return grads
+        Returns
+        -------
+        loss : keras.tensor.Op
+            Loss function operation
+        """
+        # Get the symbolic outputs of each "key" layer (we gave them unique names).
+        layer_dict = dict([(layer.name, layer) for layer in self.model.layers])
+        # Define the loss.
+        loss = K.variable(0.)
+        for layer_name in self.layer_config:
+            # Add the L2 norm of the features of a layer to the loss.
+            assert layer_name in layer_dict.keys(), 'Layer ' + layer_name + ' not found in model.'
+            # feature map weight
+            w = self.layer_config[layer_name]
+            x = layer_dict[layer_name].output
+            # We avoid border artifacts by only involving non-border pixels in the loss.
+            scaling = K.prod(K.cast(K.shape(x), 'float32'))
+            if K.image_data_format() == 'channels_first':
+                loss += w * K.sum(K.square(x[:, :, 2: -2, 2: -2])) / scaling
+            else:
+                loss += w * K.sum(K.square(x[:, 2: -2, 2: -2, :])) / scaling
+        return loss
 
-def dream_shapes(img, octave, octave_scale):
-    """
-    Reads an image and generates a list of shapes based
-    on supplied octave and octave scale parameters.
+    def _build_gradients(self, loss):
+        """
+        Builds gradients keras operation
 
-    Parameters
-    ----------
-    img : ndarray
-        Input image
-    octave : int
-        Number of scales at which to run gradient ascent
-    octavescale : float
-        Size ratio between shapes
+        Parameters
+        ----------
+        loss : tf.Tensor
+            Gradient ascent loss tensor
 
-    Returns
-    -------
-    shapes : sequence
-        Sequence of shape sorted in ascending order.
-    """
-    if K.image_data_format() == 'channels_first':
-        orig_shape = img.shape[2:]
-    else:
-        orig_shape = img.shape[1:3]
-    shapes = [orig_shape]
-    for i in range(1, octave):
-        shape = tuple([int(dim / (octave_scale ** i)) for dim in orig_shape])
-        shapes.append(shape)
-    shapes = shapes[::-1]
-    return shapes
+        Returns
+        -------
+        grads : tf.Tensor.Op
+            Gradients tensor operation
+        """
+        # dream is created by flowing an input through model
+        dream = self.model.input
+        # Compute the gradients of the dream wrt the loss.
+        grads = K.gradients(loss, dream)[0]
+        # Normalize gradients.
+        grads /= K.maximum(K.mean(K.abs(grads)), K.epsilon())
+        return grads
 
-def gradient_ascent(x, loss_fn, iterations, step, max_loss=None):
-    """
-    Run gradient ascent
+    def compile(self):
+        """
+        Builds CreepDream object
 
-    Parameters
-    ----------
-    x : tf.Tensor
-        Input data tensor
-    loss_fn : function
-        Function that evaluates and fetches loss and gradients
-    iterations : int
-        Number of gradient ascent iterations
-    step : int
-        Gradient ascent step size; this scales up the gradient size
-    max_loss : float
-        Maximum loss threshold
+        Returns
+        -------
+        CreepDream object with built TensorFlow graph
+        """
+        K.set_learning_phase(0)
+        # build gradient ascent loss
+        loss = self._build_loss()
+        # build image gradients
+        grads = self._build_gradients(loss)
+        # function that evaluates loss and gradients
+        self.loss_fn = K.function([self.model.input], [loss, grads])
+        return self
 
-    Returns
-    -------
-    x : tf.Tensor
-        Output data tensor after gradient ascent
-    """
-    for i in range(iterations):
-        # evaluate loss and gradient for the supplied input data
-        loss_value, grad_values = loss_fn([x.eval(session=K.get_session())])
-        if max_loss is not None and loss_value > max_loss:
-            break
-        print('..Loss value at', i, ':', loss_value)
-        # amplify gradient by step
-        x = tf.add(x, step * grad_values)
-    return x
+    def _shapes(self, img, octave, octave_scale):
+        """
+        Generate list of image shapes
 
-def dream(img, model, iterations, step, max_loss, shapes, config):
-    """
-    Creep Dream:
+        Reads an image and generates a list of shapes based
+        on supplied octave and octave scale parameters.
 
-    Runs gradient ascent. First it upscales provided image to particular
-    scale then it reinjects the detail that was lost at upscaling time back.
+        Parameters
+        ----------
+        img : ndarray
+            Input image
+        octave : int
+            Number of scales at which to run gradient ascent
+        octave_scale : float
+            Size ratio between shapes
 
-    Parameters
-    ----------
-    img : ndarray
-        Image as a numpy array
-    model : keras.model
-        Keras CNN model
-    iterations : int
-        Number of iterations
-    step : int
-        Gradient ascent step size
-    max_loss : float
-        Gradient descent max loss
-    shapes : sequence
-        Successive image shapes
-    config : dict
-        Model config dictionary
+        Returns
+        -------
+        shapes : sequence
+            Sequence of shape sorted in ascending order.
+        """
+        if K.image_data_format() == 'channels_first':
+            orig_shape = img.shape[2:]
+        else:
+            orig_shape = img.shape[1:3]
+        shapes = [orig_shape]
+        for i in range(1, octave):
+            shape = tuple([int(dim / (octave_scale ** i)) for dim in orig_shape])
+            shapes.append(shape)
+        shapes = shapes[::-1]
+        return shapes
 
-    Returns
-    -------
-    img : tf.Tensor
-        Deep dream modified image
-    """
-    # build gradient ascent loss
-    loss = build_loss(model, config)
-    # build image gradients
-    grads = build_gradients(model, loss)
-    # function that evaluates loss and gradients
-    loss_fn = K.function([model.input], [loss, grads])
+    def _gradient_ascent(self, img, iterations, step_size, max_loss=None):
+        """
+        Run gradient ascent
 
-    orig_img = np.copy(img)
-    shrunk_orig_img = resize_img(img, shapes[0])
-    for shape in shapes:
-    #for shape in [shapes[0]]:
-        img = resize_img(img, shape)
-        # shift image pixels by jitter pixels
-        img = gradient_ascent(img,
-                              loss_fn=loss_fn,
-                              iterations=iterations,
-                              step=step,
-                              max_loss=max_loss)
-        # upscale shrunk image: not in first iteration this will do nothing
-        upscaled_shrunk_orig_img = resize_img(shrunk_orig_img, shape)
-        # upscale original image: from the original size back to original
-        same_size_orig_img = resize_img(orig_img, shape)
-        lost_detail = tf.subtract(same_size_orig_img, upscaled_shrunk_orig_img)
-        img = tf.add(img, lost_detail)
-        shrunk_orig_img = resize_img(orig_img, shape)
-    return img
+        Parameters
+        ----------
+        img : tf.Tensor
+            Input image data tensor
+        iterations : int
+            Number of gradient ascent iterations
+        step_size : int
+            Gradient ascent step size; this scales up the gradient size
+        max_loss : float
+            Maximum loss threshold
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Creep Dreamz with Keras.')
-    parser.add_argument('-i', '--input', type=str,
-                        help='Path to the input data', required=True)
-    parser.add_argument('-o', '--output', type=str,
-                        help='Path to the output data', required=True)
-    parser.add_argument('-oct', '--octave', type=int,
-                        help='Number of scales at which to run gradient ascent', required=False)
-    parser.add_argument('-ocs', '--octavescale', type=float,
-                        help='Size ratio between scales', required=False)
-    parser.add_argument('-s', '--step', type=float,
-                        help='Gradient ascent step size', required=False)
-    parser.add_argument('-iter', '--iterations', type=int,
-                        help='Number of gradient ascent steps per scale', required=False)
-    parser.add_argument('-mxl', '--maxloss', type=float,
-                        help='Maximum gradient ascent loss', required=False)
+        Returns
+        -------
+        img : tf.Tensor
+            Image data tensor after gradient ascent
+        """
+        for i in range(iterations):
+            # evaluate loss and gradient for the supplied input data
+            loss_value, grad_values = self.loss_fn([img.eval(session=K.get_session())])
+            if max_loss is not None and loss_value > max_loss:
+                break
+            print('..Loss value at', i, ':', loss_value)
+            # amplify gradient by step
+            img = tf.add(img, step_size * grad_values)
+        return img
 
-    # These are the names of the InceptionV3 50 layers
-    # for which we try to maximize activation,
-    # as well as their weight in the loss # we try to maximize.
-    # You can tweak these setting to obtain new visual effects.
-    config = {
-        'features': {
-            'mixed2': 0.2,
-            'mixed3': 0.5,
-            'mixed4': 2.,
-            'mixed5': 1.5,
-        },
-    }
+    def run(self, img, iterations, step_size, octave, octave_scale, max_loss=None):
+        """
+        Runs CreepDream
 
-    args = parser.parse_args()
-    # set learning phase to test mode
-    K.set_learning_phase(0)
-    # Load ption model
-    model = inception_v3.InceptionV3(weights='imagenet', include_top=False)
-    # preprocess input image
-    img = preprocess_image(args.input)
-    # generate creep dream shapes
-    shapes = dream_shapes(img, args.octave, args.octavescale)
-    # run creep dream and get the resulting image
-    img = dream(img, model, args.iterations, args.step,
-                args.maxloss, shapes, config)
-    # save resulting image to hard drive
-    save_img(img, fname=args.output)
+        Runs gradient ascent. First it upscales provided image to particular
+        scale then it reinjects the detail that was lost at upscaling time back.
+
+        Parameters
+        ----------
+        img : ndarray
+            Image as a numpy array
+        iterations : int
+            Number of iterations
+        step_size : int
+            Gradient ascent step size
+        octave : int
+            Number of scales at which to run gradient ascent
+        octave_scale : float
+            Size ratio between shapes
+        max_loss : float
+            Gradient descent max loss
+
+        Returns
+        -------
+        img : tf.Tensor
+            Deep dream modified image
+        """
+        # create image shapes of different sizes
+        shapes = self._shapes(img, octave, octave_scale)
+        # copy original image - we want to avoid modifying it
+        orig_img = np.copy(img)
+        shrunk_orig_img = resize(img, shapes[0])
+        for shape in shapes:
+            img = resize(img, shape)
+            img = self._gradient_ascent(img,
+                                       iterations=iterations,
+                                       step_size=step_size,
+                                       max_loss=max_loss)
+            # upscale shrunk image: not in first iteration this will do nothing
+            upscaled_shrunk_orig_img = resize(shrunk_orig_img, shape)
+            # upscale original image: from the original size back to original
+            same_size_orig_img = resize(orig_img, shape)
+            lost_detail = tf.subtract(same_size_orig_img, upscaled_shrunk_orig_img)
+            img = tf.add(img, lost_detail)
+            shrunk_orig_img = resize(orig_img, shape)
+        return img
