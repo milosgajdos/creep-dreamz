@@ -10,7 +10,7 @@ Markdown==2.6.11
 numpy==1.14.1
 Pillow==5.0.0
 protobuf==3.5.1
-PyYAML==3.12
+PyYAML==5.1
 scipy==1.0.0
 six==1.11.0
 tensorboard==1.6.0
